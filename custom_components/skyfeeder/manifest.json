@@ -1,0 +1,13 @@
+{
+    "domain": "skyfeeder",
+    "name": "SkyFeeder",
+    "version": "0.4.0",
+    "codeowners": ["@mrmortalmonkey"],
+    "config_flow": true,
+    "dependencies": [],
+    "documentation": "https://github.com/mrmortalmonkey/skyfeeder",
+    "integration_type": "service",
+    "iot_class": "local_polling",
+    "issue_tracker": "https://github.com/mrmortalmonkey/skyfeeder/issues",
+    "requirements": []
+}

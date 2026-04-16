@@ -1,0 +1,33 @@
+track_aircraft:
+  name: Track aircraft
+  description: >-
+    Add an aircraft to the manually-tracked list. The aircraft will appear in
+    the `tracked_aircraft` sensor's `aircraft` attribute, and a device_tracker
+    entity will be created for it regardless of whether it is inside your
+    configured radius.
+  fields:
+    aircraft:
+      name: Aircraft identifier
+      description: >-
+        ICAO 24-bit hex code (e.g. `a1b2c3`), callsign / flight number
+        (e.g. `BAW123`), or registration (e.g. `G-ABCD`). Case-insensitive.
+      required: true
+      example: "a1b2c3"
+      selector:
+        text:
+
+untrack_aircraft:
+  name: Untrack aircraft
+  description: Remove an aircraft from the manually-tracked list.
+  fields:
+    aircraft:
+      name: Aircraft identifier
+      description: The same identifier used when calling `track_aircraft`.
+      required: true
+      example: "a1b2c3"
+      selector:
+        text:
+
+clear_tracked:
+  name: Clear tracked aircraft
+  description: Remove all aircraft from the manually-tracked list.

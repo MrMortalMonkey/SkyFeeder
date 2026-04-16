@@ -1,0 +1,106 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your ADS-B feeder",
+        "description": "Enter the host and port of your ADS-B feeder (tar1090-based, e.g. Ultrafeeder, readsb, dump1090-fa). SkyFeeder will poll the tar1090 JSON API for live aircraft data and (optionally) add map + stats panels to the sidebar.",
+        "data": {
+          "name": "Name",
+          "host": "Feeder host",
+          "port": "tar1090 port",
+          "latitude": "Monitoring point latitude",
+          "longitude": "Monitoring point longitude",
+          "radius": "Radius (km)",
+          "scan_interval": "Scan interval (seconds)",
+          "min_altitude": "Minimum altitude filter (ft)",
+          "max_altitude": "Maximum altitude filter (ft)",
+          "filter_categories": "Include only these ICAO categories (comma-separated)",
+          "filter_types": "Include only these ICAO type designators (comma-separated)",
+          "exclude_categories": "Exclude these ICAO categories (comma-separated)",
+          "exclude_types": "Exclude these ICAO type designators (comma-separated)",
+          "enable_device_trackers": "Create device trackers for aircraft in area",
+          "max_device_trackers": "Maximum device trackers to create",
+          "enable_panels": "Add ADS-B Map and Station Stats panels to the sidebar",
+          "tar1090_path": "tar1090 path",
+          "graphs1090_port": "graphs1090 port",
+          "graphs1090_path": "graphs1090 path"
+        },
+        "data_description": {
+          "host": "Hostname, IP address, or mDNS name of the machine running your ADS-B feeder.",
+          "port": "TCP port for tar1090 (default 8080).",
+          "radius": "Aircraft within this distance (in km) from the monitoring point will be included in area sensors and fire zone events.",
+          "scan_interval": "How often (in seconds) to poll the feeder. Minimum 5 s.",
+          "min_altitude": "Ignore aircraft below this barometric altitude.",
+          "max_altitude": "Ignore aircraft above this barometric altitude.",
+          "filter_categories": "Comma-separated ICAO emitter categories to include - e.g. 'A1,A3,A5,A7'. A1=light, A3=large, A5=heavy, A7=rotorcraft, B1=glider, B6=UAV. Empty = all.",
+          "filter_types": "Comma-separated ICAO type designators to include - e.g. 'A320,B738,R44'. Empty = all.",
+          "exclude_categories": "Comma-separated ICAO emitter categories to exclude. Empty = none.",
+          "exclude_types": "Comma-separated ICAO type designators to exclude (e.g. 'B6' to drop UAVs). Empty = none.",
+          "max_device_trackers": "Limit the number of device_tracker entities created (0 = unlimited). Closest aircraft are prioritised.",
+          "enable_panels": "Adds two iframe panels to the HA sidebar pointing at the upstream tar1090 and graphs1090 UIs. If HA is HTTPS and the feeder is HTTP, browsers will block these as mixed content.",
+          "graphs1090_port": "Port hosting graphs1090 (usually the same as tar1090)."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot reach the feeder at the given host/port. Verify the host is reachable and that tar1090 is running."
+    },
+    "abort": {
+      "already_configured": "This feeder is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SkyFeeder options",
+        "data": {
+          "name": "Name",
+          "host": "Feeder host",
+          "port": "tar1090 port",
+          "latitude": "Monitoring point latitude",
+          "longitude": "Monitoring point longitude",
+          "radius": "Radius (km)",
+          "scan_interval": "Scan interval (seconds)",
+          "min_altitude": "Minimum altitude filter (ft)",
+          "max_altitude": "Maximum altitude filter (ft)",
+          "filter_categories": "Include only these ICAO categories",
+          "filter_types": "Include only these ICAO type designators",
+          "exclude_categories": "Exclude these ICAO categories",
+          "exclude_types": "Exclude these ICAO type designators",
+          "enable_device_trackers": "Create device trackers for aircraft in area",
+          "max_device_trackers": "Maximum device trackers to create",
+          "enable_panels": "Add ADS-B Map and Station Stats panels to the sidebar",
+          "tar1090_path": "tar1090 path",
+          "graphs1090_port": "graphs1090 port",
+          "graphs1090_path": "graphs1090 path"
+        }
+      }
+    }
+  },
+  "services": {
+    "track_aircraft": {
+      "name": "Track aircraft",
+      "description": "Add an aircraft to the manually-tracked list.",
+      "fields": {
+        "aircraft": {
+          "name": "Aircraft identifier",
+          "description": "ICAO hex, callsign, or registration."
+        }
+      }
+    },
+    "untrack_aircraft": {
+      "name": "Untrack aircraft",
+      "description": "Remove an aircraft from the manually-tracked list.",
+      "fields": {
+        "aircraft": {
+          "name": "Aircraft identifier",
+          "description": "The identifier used when tracking was added."
+        }
+      }
+    },
+    "clear_tracked": {
+      "name": "Clear tracked aircraft",
+      "description": "Remove all aircraft from the manually-tracked list."
+    }
+  }
+}
