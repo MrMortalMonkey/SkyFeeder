@@ -142,14 +142,16 @@ class SkyFeederConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        return SkyFeederOptionsFlow(config_entry)
+        return SkyFeederOptionsFlow()
 
 
 class SkyFeederOptionsFlow(OptionsFlow):
     """Options flow - lets the user retune radius / scan interval / filters."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
+    # Note: do NOT define __init__ and do NOT assign self.config_entry.
+    # Since Home Assistant Core 2024.12 `config_entry` is a read-only property
+    # on OptionsFlow that HA populates itself; assigning it raises and makes
+    # the Configure cog return HTTP 500 in the frontend.
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
