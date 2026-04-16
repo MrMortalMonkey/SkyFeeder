@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="SkyFeeder">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#1976D2"/>
+      <stop offset="100%" stop-color="#0D47A1"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="42%" r="60%">
+      <stop offset="0%"  stop-color="#90CAF9" stop-opacity="0.55"/>
+      <stop offset="60%" stop-color="#90CAF9" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded square background, HA brand-style -->
+  <rect x="0" y="0" width="256" height="256" rx="48" ry="48" fill="url(#sky)"/>
+  <rect x="0" y="0" width="256" height="256" rx="48" ry="48" fill="url(#glow)"/>
+
+  <!-- Stylized airliner silhouette, banking right, viewed from above.
+       Coordinates are tuned to centre on (128, 128) and balance visually. -->
+  <g fill="#FFFFFF">
+    <!-- Fuselage -->
+    <path d="
+      M128 36
+      C 134 36, 138 44, 140 56
+      L 142 132
+      L 150 138
+      L 150 150
+      L 132 148
+      L 130 196
+      L 142 204
+      L 142 214
+      L 128 212
+      L 114 214
+      L 114 204
+      L 126 196
+      L 124 148
+      L 106 150
+      L 106 138
+      L 114 132
+      L 116 56
+      C 118 44, 122 36, 128 36 Z"/>
+    <!-- Main wings -->
+    <path d="
+      M 32 132
+      L 116 108
+      L 140 108
+      L 224 132
+      L 224 144
+      L 140 138
+      L 116 138
+      L 32 144 Z"/>
+    <!-- Tail plane -->
+    <path d="
+      M 92 196
+      L 124 188
+      L 132 188
+      L 164 196
+      L 164 204
+      L 132 200
+      L 124 200
+      L 92 204 Z"/>
+  </g>
+</svg>

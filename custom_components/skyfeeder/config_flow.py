@@ -7,8 +7,15 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .airports import lookup_airport
 from .const import (
+    CONF_AIRPORT_CODE,
+    CONF_AIRPORT_ELEVATION_FT,
+    CONF_AIRPORT_LATITUDE,
+    CONF_AIRPORT_LONGITUDE,
+    CONF_AIRPORT_NAME,
     CONF_ENABLE_PANELS,
     CONF_ENABLE_TRACKERS,
     CONF_EXCLUDE_CATEGORIES,
@@ -69,6 +76,8 @@ def _user_schema(hass_lat: float, hass_lon: float, defaults: dict[str, Any] | No
             vol.Optional(
                 CONF_MAX_ALTITUDE, default=d.get(CONF_MAX_ALTITUDE, DEFAULT_MAX_ALTITUDE)
             ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100000)),
+            # ---- Local airport (for AGL-based takeoff / landing events) ----
+            vol.Optional(CONF_AIRPORT_CODE, default=d.get(CONF_AIRPORT_CODE, "")): str,
             # ---- Aircraft type filtering -----------------------------------
             vol.Optional(
                 CONF_FILTER_CATEGORIES, default=d.get(CONF_FILTER_CATEGORIES, DEFAULT_FILTER)
@@ -119,15 +128,19 @@ class SkyFeederConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}")
             self._abort_if_unique_id_configured()
 
-            coord = SkyFeederCoordinator(self.hass, user_input)
-            try:
-                ok = await coord.async_probe()
-            except Exception:  # noqa: BLE001
-                ok = False
-            if not ok:
-                errors["base"] = "cannot_connect"
+            airport_err = await _resolve_airport(self.hass, user_input)
+            if airport_err:
+                errors["base"] = airport_err
             else:
-                return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
+                coord = SkyFeederCoordinator(self.hass, user_input)
+                try:
+                    ok = await coord.async_probe()
+                except Exception:  # noqa: BLE001
+                    ok = False
+                if not ok:
+                    errors["base"] = "cannot_connect"
+                else:
+                    return self.async_create_entry(title=user_input[CONF_NAME], data=user_input)
 
         return self.async_show_form(
             step_id="user",
@@ -154,10 +167,16 @@ class SkyFeederOptionsFlow(OptionsFlow):
     # the Configure cog return HTTP 500 in the frontend.
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+        errors: dict[str, str] = {}
 
-        merged = {**self.config_entry.data, **self.config_entry.options}
+        if user_input is not None:
+            airport_err = await _resolve_airport(self.hass, user_input)
+            if airport_err:
+                errors["base"] = airport_err
+            else:
+                return self.async_create_entry(title="", data=user_input)
+
+        merged = {**self.config_entry.data, **self.config_entry.options, **(user_input or {})}
         return self.async_show_form(
             step_id="init",
             data_schema=_user_schema(
@@ -165,4 +184,41 @@ class SkyFeederOptionsFlow(OptionsFlow):
                 self.hass.config.longitude or 0.0,
                 merged,
             ),
+            errors=errors,
         )
+
+
+async def _resolve_airport(hass, user_input: dict[str, Any]) -> str | None:
+    """Resolve CONF_AIRPORT_CODE to elevation/coords on ``user_input`` in place.
+
+    Returns an error key for the form, or ``None`` on success (including when
+    no code was supplied - airport is optional). Mutates ``user_input`` to
+    strip the cached fields when no code is set, so a user can clear it.
+    """
+    code = (user_input.get(CONF_AIRPORT_CODE) or "").strip().upper()
+    if not code:
+        for k in (
+            CONF_AIRPORT_CODE,
+            CONF_AIRPORT_NAME,
+            CONF_AIRPORT_ELEVATION_FT,
+            CONF_AIRPORT_LATITUDE,
+            CONF_AIRPORT_LONGITUDE,
+        ):
+            user_input.pop(k, None)
+        return None
+
+    session = async_get_clientsession(hass)
+    record = await lookup_airport(session, code)
+    if not record:
+        return "airport_not_found"
+    if record.get("elevation_ft") is None:
+        return "airport_no_elevation"
+
+    user_input[CONF_AIRPORT_CODE] = code
+    user_input[CONF_AIRPORT_NAME] = record.get("name") or code
+    user_input[CONF_AIRPORT_ELEVATION_FT] = int(record["elevation_ft"])
+    if record.get("latitude_deg") is not None:
+        user_input[CONF_AIRPORT_LATITUDE] = float(record["latitude_deg"])
+    if record.get("longitude_deg") is not None:
+        user_input[CONF_AIRPORT_LONGITUDE] = float(record["longitude_deg"])
+    return None

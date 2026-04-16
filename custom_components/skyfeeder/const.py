@@ -18,6 +18,15 @@ CONF_MAX_ALTITUDE = "max_altitude"
 CONF_ENABLE_TRACKERS = "enable_device_trackers"
 CONF_MAX_TRACKERS = "max_device_trackers"
 
+# Local airport. User enters an ICAO (KPIR) or IATA (PIR) code; during the
+# config flow we resolve it against OurAirports and cache the field elevation +
+# position so takeoff/landing events can be fired in AGL terms at that airport.
+CONF_AIRPORT_CODE = "airport_code"
+CONF_AIRPORT_NAME = "airport_name"
+CONF_AIRPORT_ELEVATION_FT = "airport_elevation_ft"
+CONF_AIRPORT_LATITUDE = "airport_latitude"
+CONF_AIRPORT_LONGITUDE = "airport_longitude"
+
 # Aircraft type filtering (all comma-separated, case-insensitive, empty = no filter).
 CONF_FILTER_CATEGORIES = "filter_categories"  # ICAO emitter categories (A1, A3, B6...)
 CONF_FILTER_TYPES = "filter_types"            # ICAO type designators (A320, B738, R44...)
@@ -52,6 +61,17 @@ AIRCRAFT_ENDPOINT = "/data/aircraft.json"
 RECEIVER_ENDPOINT = "/data/receiver.json"
 STATS_ENDPOINT = "/data/stats.json"
 HTTP_TIMEOUT = 10
+
+# OurAirports public-domain dataset. Used at config time only to resolve a user-
+# supplied airport code to its field elevation and coordinates; never polled
+# from the running integration. CSV is ~10 MB and indexed in-process per HA run.
+OURAIRPORTS_CSV_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
+OURAIRPORTS_FETCH_TIMEOUT = 60
+
+# Aircraft must be within this many km of the configured airport to be eligible
+# for takeoff / landed events. Avoids false positives from descents / climbs at
+# unrelated airfields that happen to fall inside the watch radius.
+AIRPORT_EVENT_RADIUS_KM = 5.0
 
 # --- Events ---------------------------------------------------------------------
 EVENT_ENTRY = "skyfeeder_aircraft_entered"
