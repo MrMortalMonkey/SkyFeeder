@@ -28,7 +28,7 @@ entities — plus optional sidebar panels for the map and station stats.
 ## Install via HACS
 
 1. Open HACS → **Integrations** → ⋮ → **Custom repositories**.
-2. Repository: `https://github.com/mrmortalmonkey/ha-ultrafeeder-integration`
+2. Repository: `https://github.com/mrmortalmonkey/skyfeeder`
    Category: **Integration** → **Add**.
 3. Find **SkyFeeder** → **Download**.
 4. Restart Home Assistant.
