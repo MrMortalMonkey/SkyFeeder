@@ -16,6 +16,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     AIRCRAFT_ENDPOINT,
+    AIRPORT_EVENT_RADIUS_KM,
+    CONF_AIRPORT_CODE,
+    CONF_AIRPORT_ELEVATION_FT,
+    CONF_AIRPORT_LATITUDE,
+    CONF_AIRPORT_LONGITUDE,
+    CONF_AIRPORT_NAME,
     CONF_EXCLUDE_CATEGORIES,
     CONF_EXCLUDE_TYPES,
     CONF_FILTER_CATEGORIES,
@@ -94,6 +100,9 @@ class Aircraft:
     mlat: bool = False
     tisb: bool = False
     distance_km: float | None = None
+    on_ground: bool = False
+    agl_ft: int | None = None              # altitude relative to configured airport elevation
+    distance_to_airport_km: float | None = None
 
     def as_attr_dict(self) -> dict[str, Any]:
         d = {
@@ -116,6 +125,13 @@ class Aircraft:
             "mlat": self.mlat,
             "tisb": self.tisb,
             "distance_km": (round(self.distance_km, 2) if self.distance_km is not None else None),
+            "on_ground": self.on_ground,
+            "agl_ft": self.agl_ft,
+            "distance_to_airport_km": (
+                round(self.distance_to_airport_km, 2)
+                if self.distance_to_airport_km is not None
+                else None
+            ),
         }
         return {k: v for k, v in d.items() if v is not None}
 
@@ -182,8 +198,9 @@ def _parse_aircraft(raw: dict[str, Any], home_lat: float | None, home_lon: float
     """Map a raw aircraft.json entry to an :class:`Aircraft`."""
     hex_code = (raw.get("hex") or "").strip().lower()
     alt_raw = raw.get("alt_baro")
+    on_ground = alt_raw == "ground" or bool(raw.get("ground"))
     if alt_raw == "ground":
-        altitude = 0
+        altitude = None  # MSL is unknown when the airframe just reports "ground"
     else:
         altitude = _to_int(alt_raw) if alt_raw is not None else _to_int(raw.get("altitude"))
 
@@ -221,6 +238,7 @@ def _parse_aircraft(raw: dict[str, Any], home_lat: float | None, home_lon: float
         mlat=is_mlat,
         tisb=bool(raw.get("tisb")),
         distance_km=distance,
+        on_ground=on_ground,
     )
 
 
@@ -237,6 +255,16 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self.min_altitude: int = int(entry_data.get(CONF_MIN_ALTITUDE, DEFAULT_MIN_ALTITUDE))
         self.max_altitude: int = int(entry_data.get(CONF_MAX_ALTITUDE, DEFAULT_MAX_ALTITUDE))
 
+        # Configured local airport (optional). When set, AGL is computed as
+        # altitude_msl - airport_elevation_ft and takeoff / landed events are
+        # gated to aircraft within AIRPORT_EVENT_RADIUS_KM of the field.
+        self.airport_code: str = (entry_data.get(CONF_AIRPORT_CODE) or "").strip().upper()
+        self.airport_name: str = entry_data.get(CONF_AIRPORT_NAME) or ""
+        elev = entry_data.get(CONF_AIRPORT_ELEVATION_FT)
+        self.airport_elevation_ft: int = int(elev) if elev is not None else 0
+        self.airport_lat: float | None = _to_float(entry_data.get(CONF_AIRPORT_LATITUDE))
+        self.airport_lon: float | None = _to_float(entry_data.get(CONF_AIRPORT_LONGITUDE))
+
         # Aircraft type filtering. Empty set -> no filter for that dimension.
         self.filter_categories: set[str] = _parse_csv(entry_data.get(CONF_FILTER_CATEGORIES))
         self.filter_types: set[str] = _parse_csv(entry_data.get(CONF_FILTER_TYPES))
@@ -250,6 +278,7 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self._known_hexes: set[str] = set()
         self._mlat_hexes: set[str] = set()
         self._airborne_hexes: set[str] = set()
+        self._ground_hexes: set[str] = set()
         self._last_messages: int | None = None
         self._last_poll_ts: float | None = None
 
@@ -332,6 +361,7 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             ac = _parse_aircraft(raw, self.home_lat, self.home_lon)
             if not ac.hex:
                 continue
+            self._enrich_with_airport(ac)
             aircraft.append(ac)
 
         # Filter aircraft within area + altitude band + type filters
@@ -367,10 +397,43 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             now=_to_float(aircraft_doc.get("now")) or now_ts,
         )
 
+    # ---- Airport enrichment ------------------------------------------------
+
+    def _enrich_with_airport(self, ac: Aircraft) -> None:
+        """Populate AGL relative to the configured airport, plus distance to it."""
+        if ac.altitude is not None:
+            ac.agl_ft = ac.altitude - self.airport_elevation_ft
+        if (
+            self.airport_lat is not None
+            and self.airport_lon is not None
+            and ac.latitude is not None
+            and ac.longitude is not None
+        ):
+            ac.distance_to_airport_km = haversine_km(
+                self.airport_lat, self.airport_lon, ac.latitude, ac.longitude
+            )
+
     # ---- Event detection ---------------------------------------------------
 
-    def _fire(self, event_type: str, aircraft: Aircraft) -> None:
-        self.hass.bus.async_fire(event_type, aircraft.as_attr_dict())
+    def _fire(self, event_type: str, aircraft: Aircraft, **extra: Any) -> None:
+        payload = aircraft.as_attr_dict()
+        if self.airport_code:
+            payload.setdefault("airport_code", self.airport_code)
+            payload.setdefault("airport_elevation_ft", self.airport_elevation_ft)
+            if self.airport_name:
+                payload.setdefault("airport_name", self.airport_name)
+        payload.update(extra)
+        self.hass.bus.async_fire(event_type, payload)
+
+    def _airport_eligible(self, ac: Aircraft) -> bool:
+        """True if this aircraft is close enough to the airport to count for
+        takeoff / landing events. With no airport configured, fall back to the
+        legacy behaviour of just using the watch radius."""
+        if not self.airport_code:
+            return True
+        if ac.distance_to_airport_km is None:
+            return False
+        return ac.distance_to_airport_km <= AIRPORT_EVENT_RADIUS_KM
 
     def _dispatch_events(self, aircraft: list[Aircraft], in_area: list[Aircraft]) -> None:
         current_hexes = {a.hex for a in aircraft}
@@ -393,25 +456,40 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         for hex_ in current_mlat - self._mlat_hexes:
             self._fire(EVENT_MLAT, by_hex[hex_])
 
-        # Takeoff / landing heuristic for aircraft inside our watch area.
-        airborne_now = {
-            a.hex
-            for a in in_area
-            if a.altitude is not None and a.altitude >= TAKEOFF_AGL_FT
-        }
-        grounded_now = {
-            a.hex
-            for a in in_area
-            if a.altitude is not None and a.altitude <= LANDED_AGL_FT
-        }
-        for hex_ in airborne_now - self._airborne_hexes:
-            if hex_ in by_hex:
-                self._fire(EVENT_TOOK_OFF, by_hex[hex_])
-        for hex_ in grounded_now & self._airborne_hexes:
-            if hex_ in by_hex:
-                self._fire(EVENT_LANDED, by_hex[hex_])
+        # Takeoff / landing - AGL relative to the configured airport's runway
+        # elevation. With no airport configured, agl_ft == altitude (i.e. MSL).
+        airborne_now: set[str] = set()
+        ground_now: set[str] = set()
+        for a in in_area:
+            if not self._airport_eligible(a):
+                continue
+            if a.on_ground:
+                ground_now.add(a.hex)
+                continue
+            if a.agl_ft is None:
+                continue
+            if a.agl_ft >= TAKEOFF_AGL_FT:
+                airborne_now.add(a.hex)
+            elif a.agl_ft <= LANDED_AGL_FT:
+                ground_now.add(a.hex)
+
+        # Only fire transitions: a plane that first appears at cruise must not
+        # generate a "took off" event.
+        for hex_ in airborne_now & self._ground_hexes:
+            self._fire(
+                EVENT_TOOK_OFF,
+                by_hex[hex_],
+                agl_ft=by_hex[hex_].agl_ft,
+            )
+        for hex_ in ground_now & self._airborne_hexes:
+            self._fire(
+                EVENT_LANDED,
+                by_hex[hex_],
+                agl_ft=by_hex[hex_].agl_ft,
+            )
 
         self._airborne_hexes = airborne_now
+        self._ground_hexes = ground_now
         self._in_area_hexes = current_area_hexes
         self._known_hexes = current_hexes
         self._mlat_hexes = current_mlat
