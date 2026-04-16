@@ -46,7 +46,7 @@ new panels pointing at the upstream tar1090 and graphs1090 UIs.
 * A local ADS-B feeder reachable over HTTP, exposing:
   * `/data/aircraft.json` (tar1090 / readsb)
   * `/data/receiver.json` (optional, for gain sensor)
-* Tested against [Ultrafeeder](https://github.com/sdr-enthusiasts/docker-adsb-ultrafeeder)
+* Tested against [Ultrafeeder](https://github.com/sdr-enthusiasts/skyfeeder)
   and readsb; should work with any tar1090-compatible frontend.
 
 ---
