@@ -23,8 +23,17 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_ENABLE_TRACKERS, CONF_MAX_TRACKERS, DEFAULT_ENABLE_TRACKERS, DEFAULT_MAX_TRACKERS, DOMAIN, MANUFACTURER, MODEL
-from .coordinator import Aircraft, SkyFeederCoordinator
+from .const import (
+    CONF_ENABLE_TRACKERS,
+    CONF_MAX_TRACKERS,
+    CONF_WATCHED_REGISTRATIONS,
+    DEFAULT_ENABLE_TRACKERS,
+    DEFAULT_MAX_TRACKERS,
+    DOMAIN,
+    MANUFACTURER,
+    MODEL,
+)
+from .coordinator import Aircraft, SkyFeederCoordinator, _parse_csv
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,15 +43,36 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up device_tracker entities."""
+    """Set up device_tracker entities.
+
+    Two independent mechanisms:
+      * Opt-in registration watchlist - one fixed entity per tail number the
+        user listed in CONF_WATCHED_REGISTRATIONS. Entity shows position while
+        the airframe is inside the watch area and `not_home` otherwise.
+      * Legacy auto-trackers - one entity per aircraft inside the watch area,
+        opt-in via CONF_ENABLE_TRACKERS (default False as of 1.2.0).
+    """
     merged = {**entry.data, **entry.options}
-    if not merged.get(CONF_ENABLE_TRACKERS, DEFAULT_ENABLE_TRACKERS):
+    coordinator: SkyFeederCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    watchlist = _parse_csv(merged.get(CONF_WATCHED_REGISTRATIONS))
+    auto_enabled = bool(merged.get(CONF_ENABLE_TRACKERS, DEFAULT_ENABLE_TRACKERS))
+
+    if watchlist:
+        async_add_entities(
+            SkyFeederWatchlistTrackerEntity(coordinator, entry, reg) for reg in sorted(watchlist)
+        )
+
+    if not auto_enabled:
         return
 
-    coordinator: SkyFeederCoordinator = hass.data[DOMAIN][entry.entry_id]
     max_trackers: int = int(merged.get(CONF_MAX_TRACKERS, DEFAULT_MAX_TRACKERS))
 
-    # Keep a registry of trackers we've already created (hex -> entity).
+    # Registration-keyed set of tails we've already covered via the watchlist;
+    # skip them in auto-tracking to avoid a duplicate entity per aircraft.
+    watchlist_regs: set[str] = watchlist
+
+    # Keep a registry of auto-created trackers we've seen (hex -> entity).
     known: dict[str, SkyFeederTrackerEntity] = {}
 
     @callback
@@ -51,14 +81,18 @@ async def async_setup_entry(
         if not data:
             return
 
-        # Build the set of hex codes we want trackers for:
+        # Build the set of hex codes we want auto-trackers for:
         # aircraft in area + any manually tracked ones visible anywhere.
         wanted_hexes: set[str] = set()
         for ac in data.in_area:
+            if (ac.registration or "").lower() in watchlist_regs:
+                continue
             wanted_hexes.add(ac.hex)
         for ac in data.aircraft:
             ident_lower = set([ac.hex, (ac.flight or "").lower(), (ac.registration or "").lower()])
             if ident_lower & coordinator.tracked:
+                if (ac.registration or "").lower() in watchlist_regs:
+                    continue
                 wanted_hexes.add(ac.hex)
 
         # Respect the cap (closest first).
@@ -174,4 +208,76 @@ class SkyFeederTrackerEntity(CoordinatorEntity[SkyFeederCoordinator], TrackerEnt
             by_hex = {a.hex: a for a in data.aircraft}
             if self._aircraft.hex in by_hex:
                 self._aircraft = by_hex[self._aircraft.hex]
+        self.async_write_ha_state()
+
+
+class SkyFeederWatchlistTrackerEntity(CoordinatorEntity[SkyFeederCoordinator], TrackerEntity):
+    """A fixed device tracker keyed on a single registration (tail number).
+
+    Shows position only while the airframe is inside the configured watch
+    area; otherwise reports ``not_home``. The entity exists across restarts
+    regardless of whether the aircraft is currently visible, so automations
+    can reference it reliably.
+    """
+
+    _attr_has_entity_name = True
+    _attr_source_type = SourceType.GPS
+
+    def __init__(
+        self,
+        coordinator: SkyFeederCoordinator,
+        entry: ConfigEntry,
+        registration: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._registration = registration.strip().lower()
+        pretty = self._registration.upper()
+        self._attr_unique_id = f"{entry.entry_id}_watch_{self._registration}"
+        self._attr_name = pretty
+        self._attr_icon = "mdi:airplane-marker"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title or "SkyFeeder",
+            manufacturer=MANUFACTURER,
+            model=MODEL,
+            configuration_url=f"http://{coordinator.host}:{coordinator.port}/",
+        )
+
+    def _find_in_area(self) -> Aircraft | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        target = self._registration
+        for ac in data.in_area:
+            if (ac.registration or "").lower() == target:
+                return ac
+        return None
+
+    @property
+    def latitude(self) -> float | None:
+        ac = self._find_in_area()
+        return ac.latitude if ac else None
+
+    @property
+    def longitude(self) -> float | None:
+        ac = self._find_in_area()
+        return ac.longitude if ac else None
+
+    @property
+    def location_accuracy(self) -> int:
+        return 50
+
+    @property
+    def battery_level(self) -> int | None:
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        ac = self._find_in_area()
+        if ac is not None:
+            return ac.as_attr_dict()
+        return {"registration": self._registration.upper(), "in_area": False}
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()

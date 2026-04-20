@@ -143,6 +143,28 @@ SENSOR_SPECS: tuple[SkyFeederSensorSpec, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: 0,  # overridden by SkyFeederTrackedSensor
     ),
+    SkyFeederSensorSpec(
+        key="entered_area_recent",
+        name="Aircraft entered area (last hour)",
+        icon="mdi:airplane-landing",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(d.entered_recent),
+        attrs_fn=lambda d: {
+            "events": d.entered_recent,
+            "aircraft": [e["aircraft"] for e in d.entered_recent],
+        },
+    ),
+    SkyFeederSensorSpec(
+        key="exited_area_recent",
+        name="Aircraft exited area (last hour)",
+        icon="mdi:airplane-takeoff",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(d.exited_recent),
+        attrs_fn=lambda d: {
+            "events": d.exited_recent,
+            "aircraft": [e["aircraft"] for e in d.exited_recent],
+        },
+    ),
 )
 
 

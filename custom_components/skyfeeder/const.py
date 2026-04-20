@@ -18,6 +18,10 @@ CONF_MAX_ALTITUDE = "max_altitude"
 CONF_ENABLE_TRACKERS = "enable_device_trackers"
 CONF_MAX_TRACKERS = "max_device_trackers"
 
+# Opt-in watchlist of specific registrations (tail numbers). One device_tracker
+# per entry; shown only when the airframe is inside the configured watch area.
+CONF_WATCHED_REGISTRATIONS = "watched_registrations"
+
 # Local airport. User enters an ICAO (KPIR) or IATA (PIR) code; during the
 # config flow we resolve it against OurAirports and cache the field elevation +
 # position so takeoff/landing events can be fired in AGL terms at that airport.
@@ -47,9 +51,16 @@ DEFAULT_RADIUS_KM = 50
 DEFAULT_SCAN_INTERVAL = 15
 DEFAULT_MIN_ALTITUDE = 0
 DEFAULT_MAX_ALTITUDE = 60000
-DEFAULT_ENABLE_TRACKERS = True
+DEFAULT_ENABLE_TRACKERS = False
 DEFAULT_MAX_TRACKERS = 25
+DEFAULT_WATCHED_REGISTRATIONS = ""
 DEFAULT_FILTER = ""
+
+# Rolling window for the entered_area / exited_area recent-activity sensors.
+AREA_HISTORY_WINDOW_SEC = 3600
+# Hard cap on how many historical entries we keep per log, to bound memory on
+# busy feeders (an hour's worth of entries at a very busy urban site).
+AREA_HISTORY_MAX_ENTRIES = 500
 
 DEFAULT_ENABLE_PANELS = True
 DEFAULT_GRAPHS1090_PORT = 8080
