@@ -35,6 +35,7 @@ from .const import (
     CONF_RADIUS,
     CONF_SCAN_INTERVAL,
     CONF_TAR1090_PATH,
+    CONF_WATCHED_REGISTRATIONS,
     DEFAULT_ENABLE_PANELS,
     DEFAULT_ENABLE_TRACKERS,
     DEFAULT_FILTER,
@@ -92,6 +93,15 @@ def _user_schema(hass_lat: float, hass_lon: float, defaults: dict[str, Any] | No
                 CONF_EXCLUDE_TYPES, default=d.get(CONF_EXCLUDE_TYPES, DEFAULT_FILTER)
             ): str,
             # ---- Device trackers -------------------------------------------
+            # Registration watchlist (opt-in). Comma-separated tail numbers -
+            # one dedicated tracker per entry, visible only while the airframe
+            # is inside the configured watch radius.
+            vol.Optional(
+                CONF_WATCHED_REGISTRATIONS,
+                default=d.get(CONF_WATCHED_REGISTRATIONS, ""),
+            ): str,
+            # Blanket auto-tracking: one entity per aircraft inside the radius.
+            # Default False since 1.2.0 - most users only want the watchlist.
             vol.Optional(
                 CONF_ENABLE_TRACKERS, default=d.get(CONF_ENABLE_TRACKERS, DEFAULT_ENABLE_TRACKERS)
             ): bool,

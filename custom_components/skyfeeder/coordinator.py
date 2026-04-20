@@ -17,6 +17,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     AIRCRAFT_ENDPOINT,
     AIRPORT_EVENT_RADIUS_KM,
+    AREA_HISTORY_MAX_ENTRIES,
+    AREA_HISTORY_WINDOW_SEC,
     CONF_AIRPORT_CODE,
     CONF_AIRPORT_ELEVATION_FT,
     CONF_AIRPORT_LATITUDE,
@@ -31,9 +33,12 @@ from .const import (
     CONF_LONGITUDE,
     CONF_MAX_ALTITUDE,
     CONF_MIN_ALTITUDE,
+    CONF_NAME,
     CONF_PORT,
     CONF_RADIUS,
     CONF_SCAN_INTERVAL,
+    CONF_WATCHED_REGISTRATIONS,
+    DEFAULT_NAME,
     DEFAULT_MAX_ALTITUDE,
     DEFAULT_MIN_ALTITUDE,
     DEFAULT_PORT,
@@ -146,6 +151,10 @@ class SkyFeederData:
     messages_per_second: float | None = None
     receiver: dict[str, Any] = field(default_factory=dict)
     now: float = 0.0
+    # Rolling entry/exit activity, pruned to AREA_HISTORY_WINDOW_SEC each tick.
+    # Each item: {"timestamp": float, "aircraft": <Aircraft.as_attr_dict()>}
+    entered_recent: list[dict[str, Any]] = field(default_factory=list)
+    exited_recent: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -271,6 +280,17 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self.exclude_categories: set[str] = _parse_csv(entry_data.get(CONF_EXCLUDE_CATEGORIES))
         self.exclude_types: set[str] = _parse_csv(entry_data.get(CONF_EXCLUDE_TYPES))
 
+        # Opt-in watchlist of registrations to create dedicated trackers for.
+        self.watched_registrations: set[str] = _parse_csv(
+            entry_data.get(CONF_WATCHED_REGISTRATIONS)
+        )
+
+        # Device / instance name - stamped on every event as `tracked_by_device`
+        # so multi-feeder households can route automations per site.
+        self.device_name: str = (
+            entry_data.get(CONF_NAME) or DEFAULT_NAME
+        )
+
         scan = int(entry_data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
 
         # State for event detection.
@@ -281,6 +301,11 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self._ground_hexes: set[str] = set()
         self._last_messages: int | None = None
         self._last_poll_ts: float | None = None
+
+        # Rolling logs of recent entries / exits, feeding the
+        # entered_area / exited_area activity sensors.
+        self._entered_log: list[dict[str, Any]] = []
+        self._exited_log: list[dict[str, Any]] = []
 
         # Extra manually-tracked aircraft (by ICAO hex or callsign).
         self.tracked: set[str] = set()
@@ -388,6 +413,9 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self._last_messages = total_msgs
         self._last_poll_ts = now_ts
 
+        self._prune_area_log(self._entered_log, now_ts)
+        self._prune_area_log(self._exited_log, now_ts)
+
         return SkyFeederData(
             aircraft=aircraft,
             in_area=in_area,
@@ -395,7 +423,30 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             messages_per_second=msgs_per_sec,
             receiver=receiver_doc or {},
             now=_to_float(aircraft_doc.get("now")) or now_ts,
+            entered_recent=list(self._entered_log),
+            exited_recent=list(self._exited_log),
         )
+
+    # ---- Area activity log -------------------------------------------------
+
+    def _log_area_event(
+        self, log: list[dict[str, Any]], aircraft: Aircraft, ts: float
+    ) -> None:
+        log.append({"timestamp": ts, "aircraft": aircraft.as_attr_dict()})
+        if len(log) > AREA_HISTORY_MAX_ENTRIES:
+            del log[: len(log) - AREA_HISTORY_MAX_ENTRIES]
+
+    def _prune_area_log(self, log: list[dict[str, Any]], now_ts: float) -> None:
+        cutoff = now_ts - AREA_HISTORY_WINDOW_SEC
+        # Log is append-only in time order, so chop the old head in one slice.
+        drop = 0
+        for item in log:
+            if item["timestamp"] < cutoff:
+                drop += 1
+            else:
+                break
+        if drop:
+            del log[:drop]
 
     # ---- Airport enrichment ------------------------------------------------
 
@@ -417,6 +468,7 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
 
     def _fire(self, event_type: str, aircraft: Aircraft, **extra: Any) -> None:
         payload = aircraft.as_attr_dict()
+        payload["tracked_by_device"] = self.device_name
         if self.airport_code:
             payload.setdefault("airport_code", self.airport_code)
             payload.setdefault("airport_elevation_ft", self.airport_elevation_ft)
@@ -445,11 +497,14 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             self._fire(EVENT_NEW, by_hex[new_hex])
 
         # Zone entry / exit.
+        now_ts = time.time()
         for hex_ in current_area_hexes - self._in_area_hexes:
             self._fire(EVENT_ENTRY, by_hex[hex_])
+            self._log_area_event(self._entered_log, by_hex[hex_], now_ts)
         for hex_ in self._in_area_hexes - current_area_hexes:
             if hex_ in by_hex:
                 self._fire(EVENT_EXIT, by_hex[hex_])
+                self._log_area_event(self._exited_log, by_hex[hex_], now_ts)
 
         # MLAT acquisition.
         current_mlat = {a.hex for a in aircraft if a.mlat}
