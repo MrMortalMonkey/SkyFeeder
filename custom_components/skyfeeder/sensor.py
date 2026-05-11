@@ -21,8 +21,6 @@ from .coordinator import Aircraft, SkyFeederCoordinator, SkyFeederData
 
 @dataclass(frozen=True)
 class SkyFeederSensorSpec:
-    """A single sensor's behaviour."""
-
     key: str
     name: str
     icon: str
@@ -141,7 +139,7 @@ SENSOR_SPECS: tuple[SkyFeederSensorSpec, ...] = (
         name="Tracked aircraft",
         icon="mdi:eye",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: 0,  # overridden by SkyFeederTrackedSensor
+        value_fn=lambda d: 0,
     ),
     SkyFeederSensorSpec(
         key="entered_area_recent",
@@ -173,7 +171,6 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up sensor entities."""
     coordinator: SkyFeederCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities: list[SensorEntity] = []
@@ -187,8 +184,6 @@ async def async_setup_entry(
 
 
 class SkyFeederSensor(CoordinatorEntity[SkyFeederCoordinator], SensorEntity):
-    """Base sensor driven by a :class:`SkyFeederSensorSpec`."""
-
     _attr_has_entity_name = True
 
     def __init__(
@@ -224,7 +219,14 @@ class SkyFeederSensor(CoordinatorEntity[SkyFeederCoordinator], SensorEntity):
 
 
 class SkyFeederTrackedSensor(SkyFeederSensor):
-    """A sensor that lists manually-tracked aircraft (by ICAO or callsign)."""
+    def __init__(
+        self,
+        coordinator: SkyFeederCoordinator,
+        entry: ConfigEntry,
+        spec: SkyFeederSensorSpec,
+    ) -> None:
+        super().__init__(coordinator, entry, spec)
+        self._attr_icon = "mdi:eye"
 
     @property
     def native_value(self) -> int:

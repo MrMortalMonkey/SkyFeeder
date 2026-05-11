@@ -31,10 +31,12 @@ from .const import (
     CONF_MAX_TRACKERS,
     CONF_MIN_ALTITUDE,
     CONF_NAME,
+    CONF_PATH_HISTORY,
     CONF_PORT,
     CONF_RADIUS,
     CONF_SCAN_INTERVAL,
     CONF_TAR1090_PATH,
+    CONF_USE_TLS,
     CONF_WATCHED_REGISTRATIONS,
     DEFAULT_ENABLE_PANELS,
     DEFAULT_ENABLE_TRACKERS,
@@ -45,10 +47,12 @@ from .const import (
     DEFAULT_MAX_TRACKERS,
     DEFAULT_MIN_ALTITUDE,
     DEFAULT_NAME,
+    DEFAULT_PATH_HISTORY,
     DEFAULT_PORT,
     DEFAULT_RADIUS_KM,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_TAR1090_PATH,
+    DEFAULT_USE_TLS,
     DOMAIN,
 )
 from .coordinator import SkyFeederCoordinator
@@ -63,6 +67,9 @@ def _user_schema(hass_lat: float, hass_lon: float, defaults: dict[str, Any] | No
             vol.Required(CONF_PORT, default=d.get(CONF_PORT, DEFAULT_PORT)): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=65535)
             ),
+            vol.Optional(
+                CONF_USE_TLS, default=d.get(CONF_USE_TLS, DEFAULT_USE_TLS)
+            ): bool,
             vol.Required(CONF_LATITUDE, default=d.get(CONF_LATITUDE, hass_lat)): vol.Coerce(float),
             vol.Required(CONF_LONGITUDE, default=d.get(CONF_LONGITUDE, hass_lon)): vol.Coerce(float),
             vol.Required(CONF_RADIUS, default=d.get(CONF_RADIUS, DEFAULT_RADIUS_KM)): vol.All(
@@ -77,9 +84,7 @@ def _user_schema(hass_lat: float, hass_lon: float, defaults: dict[str, Any] | No
             vol.Optional(
                 CONF_MAX_ALTITUDE, default=d.get(CONF_MAX_ALTITUDE, DEFAULT_MAX_ALTITUDE)
             ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100000)),
-            # ---- Local airport (for AGL-based takeoff / landing events) ----
             vol.Optional(CONF_AIRPORT_CODE, default=d.get(CONF_AIRPORT_CODE, "")): str,
-            # ---- Aircraft type filtering -----------------------------------
             vol.Optional(
                 CONF_FILTER_CATEGORIES, default=d.get(CONF_FILTER_CATEGORIES, DEFAULT_FILTER)
             ): str,
@@ -92,23 +97,19 @@ def _user_schema(hass_lat: float, hass_lon: float, defaults: dict[str, Any] | No
             vol.Optional(
                 CONF_EXCLUDE_TYPES, default=d.get(CONF_EXCLUDE_TYPES, DEFAULT_FILTER)
             ): str,
-            # ---- Device trackers -------------------------------------------
-            # Registration watchlist (opt-in). Comma-separated tail numbers -
-            # one dedicated tracker per entry, visible only while the airframe
-            # is inside the configured watch radius.
             vol.Optional(
                 CONF_WATCHED_REGISTRATIONS,
                 default=d.get(CONF_WATCHED_REGISTRATIONS, ""),
             ): str,
-            # Blanket auto-tracking: one entity per aircraft inside the radius.
-            # Default False since 1.2.0 - most users only want the watchlist.
             vol.Optional(
                 CONF_ENABLE_TRACKERS, default=d.get(CONF_ENABLE_TRACKERS, DEFAULT_ENABLE_TRACKERS)
             ): bool,
             vol.Optional(
                 CONF_MAX_TRACKERS, default=d.get(CONF_MAX_TRACKERS, DEFAULT_MAX_TRACKERS)
             ): vol.All(vol.Coerce(int), vol.Range(min=0, max=200)),
-            # ---- Sidebar panels (replaces the legacy App) ------------------
+            vol.Optional(
+                CONF_PATH_HISTORY, default=d.get(CONF_PATH_HISTORY, DEFAULT_PATH_HISTORY)
+            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=200)),
             vol.Optional(
                 CONF_ENABLE_PANELS, default=d.get(CONF_ENABLE_PANELS, DEFAULT_ENABLE_PANELS)
             ): bool,
@@ -126,12 +127,9 @@ def _user_schema(hass_lat: float, hass_lon: float, defaults: dict[str, Any] | No
 
 
 class SkyFeederConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a SkyFeeder config flow."""
-
     VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Single-step user form."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -145,7 +143,7 @@ class SkyFeederConfigFlow(ConfigFlow, domain=DOMAIN):
                 coord = SkyFeederCoordinator(self.hass, user_input)
                 try:
                     ok = await coord.async_probe()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     ok = False
                 if not ok:
                     errors["base"] = "cannot_connect"
@@ -169,13 +167,6 @@ class SkyFeederConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class SkyFeederOptionsFlow(OptionsFlow):
-    """Options flow - lets the user retune radius / scan interval / filters."""
-
-    # Note: do NOT define __init__ and do NOT assign self.config_entry.
-    # Since Home Assistant Core 2024.12 `config_entry` is a read-only property
-    # on OptionsFlow that HA populates itself; assigning it raises and makes
-    # the Configure cog return HTTP 500 in the frontend.
-
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
 
@@ -199,12 +190,6 @@ class SkyFeederOptionsFlow(OptionsFlow):
 
 
 async def _resolve_airport(hass, user_input: dict[str, Any]) -> str | None:
-    """Resolve CONF_AIRPORT_CODE to elevation/coords on ``user_input`` in place.
-
-    Returns an error key for the form, or ``None`` on success (including when
-    no code was supplied - airport is optional). Mutates ``user_input`` to
-    strip the cached fields when no code is set, so a user can clear it.
-    """
     code = (user_input.get(CONF_AIRPORT_CODE) or "").strip().upper()
     if not code:
         for k in (

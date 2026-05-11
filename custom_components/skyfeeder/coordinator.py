@@ -34,16 +34,20 @@ from .const import (
     CONF_MAX_ALTITUDE,
     CONF_MIN_ALTITUDE,
     CONF_NAME,
+    CONF_PATH_HISTORY,
     CONF_PORT,
     CONF_RADIUS,
     CONF_SCAN_INTERVAL,
+    CONF_USE_TLS,
     CONF_WATCHED_REGISTRATIONS,
     DEFAULT_NAME,
     DEFAULT_MAX_ALTITUDE,
     DEFAULT_MIN_ALTITUDE,
+    DEFAULT_PATH_HISTORY,
     DEFAULT_PORT,
     DEFAULT_RADIUS_KM,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_USE_TLS,
     EVENT_ENTRY,
     EVENT_EXIT,
     EVENT_LANDED,
@@ -54,6 +58,8 @@ from .const import (
     LANDED_AGL_FT,
     RECEIVER_ENDPOINT,
     STATS_ENDPOINT,
+    STORAGE_KEY_TRACKED,
+    STORAGE_VERSION,
     TAKEOFF_AGL_FT,
 )
 
@@ -67,6 +73,7 @@ def _parse_csv(raw: str | list | None) -> set[str]:
     else:
         items = [str(s).strip() for s in raw]
     return {s.lower() for s in items if s}
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +89,22 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
+def estimate_position_accuracy(rssi: float | None, mlat: bool) -> int:
+    """Estimate position accuracy in meters based on signal strength and source."""
+    if mlat:
+        return 200
+    if rssi is not None:
+        db = abs(rssi)
+        if db < 20:
+            return 10
+        if db < 30:
+            return 25
+        if db < 40:
+            return 50
+        return 100
+    return 50
+
+
 @dataclass
 class Aircraft:
     """Normalised view of one aircraft record from aircraft.json."""
@@ -90,15 +113,15 @@ class Aircraft:
     flight: str | None = None
     registration: str | None = None
     squawk: str | None = None
-    category: str | None = None              # ICAO emitter category (A1..C7)
-    aircraft_type: str | None = None         # ICAO type designator (A320, B738, ...)
-    altitude: int | None = None              # barometric altitude, ft
-    ground_speed: float | None = None        # knots
-    track: float | None = None               # deg
+    category: str | None = None
+    aircraft_type: str | None = None
+    altitude: int | None = None
+    ground_speed: float | None = None
+    track: float | None = None
     latitude: float | None = None
     longitude: float | None = None
-    vertical_rate: int | None = None         # ft/min
-    rssi: float | None = None                # dBFS
+    vertical_rate: int | None = None
+    rssi: float | None = None
     messages: int | None = None
     seen: float | None = None
     seen_pos: float | None = None
@@ -106,8 +129,9 @@ class Aircraft:
     tisb: bool = False
     distance_km: float | None = None
     on_ground: bool = False
-    agl_ft: int | None = None              # altitude relative to configured airport elevation
+    agl_ft: int | None = None
     distance_to_airport_km: float | None = None
+    position_accuracy: int = 50
 
     def as_attr_dict(self) -> dict[str, Any]:
         d = {
@@ -137,6 +161,7 @@ class Aircraft:
                 if self.distance_to_airport_km is not None
                 else None
             ),
+            "position_accuracy": self.position_accuracy,
         }
         return {k: v for k, v in d.items() if v is not None}
 
@@ -150,11 +175,12 @@ class SkyFeederData:
     messages: int | None = None
     messages_per_second: float | None = None
     receiver: dict[str, Any] = field(default_factory=dict)
+    stats: dict[str, Any] = field(default_factory=dict)
     now: float = 0.0
-    # Rolling entry/exit activity, pruned to AREA_HISTORY_WINDOW_SEC each tick.
-    # Each item: {"timestamp": float, "aircraft": <Aircraft.as_attr_dict()>}
     entered_recent: list[dict[str, Any]] = field(default_factory=list)
     exited_recent: list[dict[str, Any]] = field(default_factory=list)
+    path_history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    feeder_online: bool = True
 
     @property
     def total(self) -> int:
@@ -209,7 +235,7 @@ def _parse_aircraft(raw: dict[str, Any], home_lat: float | None, home_lon: float
     alt_raw = raw.get("alt_baro")
     on_ground = alt_raw == "ground" or bool(raw.get("ground"))
     if alt_raw == "ground":
-        altitude = None  # MSL is unknown when the airframe just reports "ground"
+        altitude = None
     else:
         altitude = _to_int(alt_raw) if alt_raw is not None else _to_int(raw.get("altitude"))
 
@@ -227,6 +253,8 @@ def _parse_aircraft(raw: dict[str, Any], home_lat: float | None, home_lon: float
     cat = raw.get("category")
     type_designator = (raw.get("t") or raw.get("type") or "").strip() or None
 
+    rssi = _to_float(raw.get("rssi"))
+
     return Aircraft(
         hex=hex_code,
         flight=(raw.get("flight") or "").strip() or None,
@@ -240,7 +268,7 @@ def _parse_aircraft(raw: dict[str, Any], home_lat: float | None, home_lon: float
         latitude=lat,
         longitude=lon,
         vertical_rate=_to_int(raw.get("baro_rate") or raw.get("geom_rate")),
-        rssi=_to_float(raw.get("rssi")),
+        rssi=rssi,
         messages=_to_int(raw.get("messages")),
         seen=_to_float(raw.get("seen")),
         seen_pos=_to_float(raw.get("seen_pos")),
@@ -248,25 +276,24 @@ def _parse_aircraft(raw: dict[str, Any], home_lat: float | None, home_lon: float
         tisb=bool(raw.get("tisb")),
         distance_km=distance,
         on_ground=on_ground,
+        position_accuracy=estimate_position_accuracy(rssi, is_mlat),
     )
 
 
 class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
     """Polls the upstream feeder's tar1090 JSON endpoints and maintains state."""
 
-    def __init__(self, hass: HomeAssistant, entry_data: dict[str, Any]) -> None:
+    def __init__(self, hass: HomeAssistant, entry_data: dict[str, Any], store: Any = None) -> None:
         self.hass = hass
         self.host: str = entry_data[CONF_HOST]
         self.port: int = int(entry_data.get(CONF_PORT, DEFAULT_PORT))
+        self.use_tls: bool = bool(entry_data.get(CONF_USE_TLS, DEFAULT_USE_TLS))
         self.home_lat: float | None = entry_data.get(CONF_LATITUDE) or hass.config.latitude
         self.home_lon: float | None = entry_data.get(CONF_LONGITUDE) or hass.config.longitude
         self.radius_km: float = float(entry_data.get(CONF_RADIUS, DEFAULT_RADIUS_KM))
         self.min_altitude: int = int(entry_data.get(CONF_MIN_ALTITUDE, DEFAULT_MIN_ALTITUDE))
         self.max_altitude: int = int(entry_data.get(CONF_MAX_ALTITUDE, DEFAULT_MAX_ALTITUDE))
 
-        # Configured local airport (optional). When set, AGL is computed as
-        # altitude_msl - airport_elevation_ft and takeoff / landed events are
-        # gated to aircraft within AIRPORT_EVENT_RADIUS_KM of the field.
         self.airport_code: str = (entry_data.get(CONF_AIRPORT_CODE) or "").strip().upper()
         self.airport_name: str = entry_data.get(CONF_AIRPORT_NAME) or ""
         elev = entry_data.get(CONF_AIRPORT_ELEVATION_FT)
@@ -274,24 +301,25 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self.airport_lat: float | None = _to_float(entry_data.get(CONF_AIRPORT_LATITUDE))
         self.airport_lon: float | None = _to_float(entry_data.get(CONF_AIRPORT_LONGITUDE))
 
-        # Aircraft type filtering. Empty set -> no filter for that dimension.
         self.filter_categories: set[str] = _parse_csv(entry_data.get(CONF_FILTER_CATEGORIES))
         self.filter_types: set[str] = _parse_csv(entry_data.get(CONF_FILTER_TYPES))
         self.exclude_categories: set[str] = _parse_csv(entry_data.get(CONF_EXCLUDE_CATEGORIES))
         self.exclude_types: set[str] = _parse_csv(entry_data.get(CONF_EXCLUDE_TYPES))
 
-        # Opt-in watchlist of registrations to create dedicated trackers for.
         self.watched_registrations: set[str] = _parse_csv(
             entry_data.get(CONF_WATCHED_REGISTRATIONS)
         )
 
-        # Device / instance name - stamped on every event as `tracked_by_device`
-        # so multi-feeder households can route automations per site.
         self.device_name: str = (
             entry_data.get(CONF_NAME) or DEFAULT_NAME
         )
 
+        self.path_history_max: int = int(entry_data.get(CONF_PATH_HISTORY, DEFAULT_PATH_HISTORY))
+
         scan = int(entry_data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
+
+        # Persistence store for tracked aircraft list.
+        self._store = store
 
         # State for event detection.
         self._in_area_hexes: set[str] = set()
@@ -302,13 +330,17 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self._last_messages: int | None = None
         self._last_poll_ts: float | None = None
 
-        # Rolling logs of recent entries / exits, feeding the
-        # entered_area / exited_area activity sensors.
+        # Rolling logs of recent entries / exits.
         self._entered_log: list[dict[str, Any]] = []
         self._exited_log: list[dict[str, Any]] = []
 
+        # Flight path history: hex -> list of {lat, lon, alt, ts}.
+        self._path_history: dict[str, list[dict[str, Any]]] = {}
+
         # Extra manually-tracked aircraft (by ICAO hex or callsign).
         self.tracked: set[str] = set()
+
+        self._feeder_online: bool = True
 
         super().__init__(
             hass,
@@ -317,14 +349,36 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             update_interval=timedelta(seconds=max(5, scan)),
         )
 
+    # ---- Persistence -------------------------------------------------------
+
+    async def async_load_tracked(self) -> None:
+        """Load tracked aircraft from HA Store."""
+        if self._store is None:
+            return
+        data = await self._store.async_load()
+        if isinstance(data, dict):
+            stored = data.get(STORAGE_KEY_TRACKED, [])
+            self.tracked = set(stored)
+            _LOGGER.debug("Loaded %d tracked aircraft from storage", len(self.tracked))
+
+    async def async_save_tracked(self) -> None:
+        """Persist tracked aircraft list."""
+        if self._store is None:
+            return
+        await self._store.async_save({STORAGE_KEY_TRACKED: sorted(self.tracked)})
+
     # ---- HTTP ---------------------------------------------------------------
+
+    def _base_url(self) -> str:
+        scheme = "https" if self.use_tls else "http"
+        return f"{scheme}://{self.host}:{self.port}"
 
     async def _fetch_json(self, path: str) -> dict[str, Any] | None:
         session = async_get_clientsession(self.hass)
-        url = f"http://{self.host}:{self.port}{path}"
+        url = f"{self._base_url()}{path}"
         try:
             async with asyncio.timeout(HTTP_TIMEOUT):
-                resp = await session.get(url)
+                resp = await session.get(url, ssl=self.use_tls)
                 resp.raise_for_status()
                 return await resp.json(content_type=None)
         except (TimeoutError, aiohttp.ClientError) as err:
@@ -339,15 +393,6 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
     # ---- Filtering ---------------------------------------------------------
 
     def _passes_type_filter(self, ac: Aircraft) -> bool:
-        """Apply category / type include + exclude lists.
-
-        - Include lists: empty = match-all; non-empty = aircraft must match
-          at least one entry on every non-empty include dimension.
-        - Exclude lists: aircraft matching any entry are dropped.
-        - Aircraft without a known category/type *pass* include filters
-          unless every include dimension is non-empty (we don't want to drop
-          unknowns just because they didn't broadcast a category).
-        """
         cat = (ac.category or "").lower()
         typ = (ac.aircraft_type or "").lower()
 
@@ -359,8 +404,6 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         if self.filter_categories or self.filter_types:
             cat_ok = (not self.filter_categories) or (cat in self.filter_categories)
             type_ok = (not self.filter_types) or (typ in self.filter_types)
-            # If the aircraft is missing the field used by an active include
-            # filter, treat it as a non-match for that dimension.
             if self.filter_categories and not cat:
                 cat_ok = False
             if self.filter_types and not typ:
@@ -373,12 +416,20 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
     # ---- Coordinator entry point -------------------------------------------
 
     async def _async_update_data(self) -> SkyFeederData:
-        aircraft_doc, receiver_doc = await asyncio.gather(
+        aircraft_doc, receiver_doc, stats_doc = await asyncio.gather(
             self._fetch_json(AIRCRAFT_ENDPOINT),
             self._fetch_json(RECEIVER_ENDPOINT),
+            self._fetch_json(STATS_ENDPOINT),
         )
         if not aircraft_doc:
+            if self._feeder_online:
+                _LOGGER.warning("Feeder offline: aircraft.json not available from %s:%s", self.host, self.port)
+                self._feeder_online = False
             raise UpdateFailed(f"aircraft.json not available from {self.host}:{self.port}")
+
+        if not self._feeder_online:
+            _LOGGER.info("Feeder reconnected: %s:%s", self.host, self.port)
+            self._feeder_online = True
 
         now_ts = time.time()
         aircraft: list[Aircraft] = []
@@ -389,8 +440,7 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             self._enrich_with_airport(ac)
             aircraft.append(ac)
 
-        # Filter aircraft within area + altitude band + type filters
-        # for event / closest logic.
+        # Filter aircraft within area + altitude band + type filters.
         in_area = [
             a
             for a in aircraft
@@ -399,6 +449,26 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             and (a.altitude is None or self.min_altitude <= a.altitude <= self.max_altitude)
             and self._passes_type_filter(a)
         ]
+
+        # Flight path history tracking.
+        if self.path_history_max > 0:
+            for ac in aircraft:
+                if ac.latitude is not None and ac.longitude is not None:
+                    entry = {
+                        "latitude": ac.latitude,
+                        "longitude": ac.longitude,
+                        "altitude": ac.altitude,
+                        "ground_speed": ac.ground_speed,
+                        "track": ac.track,
+                        "timestamp": now_ts,
+                    }
+                    hist = self._path_history.setdefault(ac.hex, [])
+                    if hist and hist[-1].get("latitude") == ac.latitude and hist[-1].get("longitude") == ac.longitude:
+                        hist[-1] = entry
+                    else:
+                        hist.append(entry)
+                        if len(hist) > self.path_history_max:
+                            del hist[:len(hist) - self.path_history_max]
 
         self._dispatch_events(aircraft, in_area)
 
@@ -416,15 +486,25 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self._prune_area_log(self._entered_log, now_ts)
         self._prune_area_log(self._exited_log, now_ts)
 
+        # Prune stale path history entries.
+        stale_hexes = set(self._path_history.keys()) - {a.hex for a in aircraft}
+        for h in stale_hexes:
+            self._path_history.pop(h, None)
+
         return SkyFeederData(
             aircraft=aircraft,
             in_area=in_area,
             messages=total_msgs,
             messages_per_second=msgs_per_sec,
             receiver=receiver_doc or {},
+            stats=stats_doc or {},
             now=_to_float(aircraft_doc.get("now")) or now_ts,
             entered_recent=list(self._entered_log),
             exited_recent=list(self._exited_log),
+            path_history={
+                k: list(v) for k, v in self._path_history.items()
+            } if self.path_history_max > 0 else {},
+            feeder_online=self._feeder_online,
         )
 
     # ---- Area activity log -------------------------------------------------
@@ -438,7 +518,6 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
 
     def _prune_area_log(self, log: list[dict[str, Any]], now_ts: float) -> None:
         cutoff = now_ts - AREA_HISTORY_WINDOW_SEC
-        # Log is append-only in time order, so chop the old head in one slice.
         drop = 0
         for item in log:
             if item["timestamp"] < cutoff:
@@ -451,7 +530,6 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
     # ---- Airport enrichment ------------------------------------------------
 
     def _enrich_with_airport(self, ac: Aircraft) -> None:
-        """Populate AGL relative to the configured airport, plus distance to it."""
         if ac.altitude is not None:
             ac.agl_ft = ac.altitude - self.airport_elevation_ft
         if (
@@ -478,9 +556,6 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         self.hass.bus.async_fire(event_type, payload)
 
     def _airport_eligible(self, ac: Aircraft) -> bool:
-        """True if this aircraft is close enough to the airport to count for
-        takeoff / landing events. With no airport configured, fall back to the
-        legacy behaviour of just using the watch radius."""
         if not self.airport_code:
             return True
         if ac.distance_to_airport_km is None:
@@ -511,8 +586,7 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
         for hex_ in current_mlat - self._mlat_hexes:
             self._fire(EVENT_MLAT, by_hex[hex_])
 
-        # Takeoff / landing - AGL relative to the configured airport's runway
-        # elevation. With no airport configured, agl_ft == altitude (i.e. MSL).
+        # Takeoff / landing.
         airborne_now: set[str] = set()
         ground_now: set[str] = set()
         for a in in_area:
@@ -528,8 +602,6 @@ class SkyFeederCoordinator(DataUpdateCoordinator[SkyFeederData]):
             elif a.agl_ft <= LANDED_AGL_FT:
                 ground_now.add(a.hex)
 
-        # Only fire transitions: a plane that first appears at cruise must not
-        # generate a "took off" event.
         for hex_ in airborne_now & self._ground_hexes:
             self._fire(
                 EVENT_TOOK_OFF,

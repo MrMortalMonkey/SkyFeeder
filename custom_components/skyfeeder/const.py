@@ -8,6 +8,7 @@ MODEL = "ADS-B Feeder"
 # --- Config flow / options keys -------------------------------------------------
 CONF_HOST = "host"
 CONF_PORT = "port"
+CONF_USE_TLS = "use_tls"
 CONF_NAME = "name"
 CONF_LATITUDE = "latitude"
 CONF_LONGITUDE = "longitude"
@@ -22,7 +23,7 @@ CONF_MAX_TRACKERS = "max_device_trackers"
 # per entry; shown only when the airframe is inside the configured watch area.
 CONF_WATCHED_REGISTRATIONS = "watched_registrations"
 
-# Local airport. User enters an ICAO (KPIR) or IATA (PIR) code; during the
+# Local airport. User enters an ICAO (KJFK) or IATA (JFK) code; during the
 # config flow we resolve it against OurAirports and cache the field elevation +
 # position so takeoff/landing events can be fired in AGL terms at that airport.
 CONF_AIRPORT_CODE = "airport_code"
@@ -32,8 +33,8 @@ CONF_AIRPORT_LATITUDE = "airport_latitude"
 CONF_AIRPORT_LONGITUDE = "airport_longitude"
 
 # Aircraft type filtering (all comma-separated, case-insensitive, empty = no filter).
-CONF_FILTER_CATEGORIES = "filter_categories"  # ICAO emitter categories (A1, A3, B6...)
-CONF_FILTER_TYPES = "filter_types"            # ICAO type designators (A320, B738, R44...)
+CONF_FILTER_CATEGORIES = "filter_categories"
+CONF_FILTER_TYPES = "filter_types"
 CONF_EXCLUDE_CATEGORIES = "exclude_categories"
 CONF_EXCLUDE_TYPES = "exclude_types"
 
@@ -44,9 +45,13 @@ CONF_GRAPHS1090_PORT = "graphs1090_port"
 CONF_GRAPHS1090_PATH = "graphs1090_path"
 CONF_TAR1090_PATH = "tar1090_path"
 
+# Flight path history: how many recent positions to keep per aircraft.
+CONF_PATH_HISTORY = "path_history"
+
 # --- Defaults -------------------------------------------------------------------
 DEFAULT_NAME = "SkyFeeder"
 DEFAULT_PORT = 8080
+DEFAULT_USE_TLS = False
 DEFAULT_RADIUS_KM = 50
 DEFAULT_SCAN_INTERVAL = 15
 DEFAULT_MIN_ALTITUDE = 0
@@ -55,11 +60,10 @@ DEFAULT_ENABLE_TRACKERS = False
 DEFAULT_MAX_TRACKERS = 25
 DEFAULT_WATCHED_REGISTRATIONS = ""
 DEFAULT_FILTER = ""
+DEFAULT_PATH_HISTORY = 0
 
 # Rolling window for the entered_area / exited_area recent-activity sensors.
 AREA_HISTORY_WINDOW_SEC = 3600
-# Hard cap on how many historical entries we keep per log, to bound memory on
-# busy feeders (an hour's worth of entries at a very busy urban site).
 AREA_HISTORY_MAX_ENTRIES = 500
 
 DEFAULT_ENABLE_PANELS = True
@@ -100,3 +104,7 @@ SERVICE_CLEAR_TRACKED = "clear_tracked"
 # Takeoff / landing heuristic thresholds (feet).
 TAKEOFF_AGL_FT = 500
 LANDED_AGL_FT = 200
+
+# --- Storage keys for persisted data -------------------------------------------
+STORAGE_KEY_TRACKED = "tracked_aircraft"
+STORAGE_VERSION = 1

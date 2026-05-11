@@ -1,7 +1,7 @@
 """Airport lookup against the OurAirports public-domain dataset.
 
 Used by the config flow only, to turn a user-entered airport code (ICAO ident
-like KPIR, or IATA like PIR) into the field's elevation and coordinates.  The
+like KJFK, or IATA like JFK) into the field's elevation and coordinates.  The
 CSV is downloaded once per Home Assistant process and indexed in memory; the
 integration does not poll OurAirports at runtime.
 
@@ -29,7 +29,7 @@ _INDEX_LOCK = asyncio.Lock()
 async def lookup_airport(
     session: aiohttp.ClientSession, code: str
 ) -> dict[str, Any] | None:
-    """Resolve an ICAO (``KPIR``) or IATA (``PIR``) code to an airport record.
+    """Resolve an ICAO (``KJFK``) or IATA (``JFK``) code to an airport record.
 
     Returns a dict with ``ident``, ``iata``, ``name``, ``elevation_ft``,
     ``latitude_deg``, ``longitude_deg``, or ``None`` if no match / fetch failed.

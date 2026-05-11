@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CONF_ENABLE_PANELS,
@@ -18,25 +19,27 @@ from .const import (
     CONF_HOST,
     CONF_PORT,
     CONF_TAR1090_PATH,
+    CONF_USE_TLS,
     DEFAULT_ENABLE_PANELS,
     DEFAULT_GRAPHS1090_PATH,
     DEFAULT_GRAPHS1090_PORT,
     DEFAULT_TAR1090_PATH,
+    DEFAULT_USE_TLS,
     DOMAIN,
     SERVICE_CLEAR_TRACKED,
     SERVICE_TRACK,
     SERVICE_UNTRACK,
+    STORAGE_KEY_TRACKED,
+    STORAGE_VERSION,
 )
 from .coordinator import SkyFeederCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.DEVICE_TRACKER]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.DEVICE_TRACKER, Platform.BINARY_SENSOR]
 
 TRACK_SCHEMA = vol.Schema({vol.Required("aircraft"): cv.string})
 
-# We track which iframe panel paths each entry registered so they can be
-# removed cleanly on unload.
 _PANELS_BY_ENTRY: dict[str, list[str]] = {}
 
 
@@ -44,17 +47,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SkyFeeder from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    # Merge options on top of data so reconfiguration works.
     merged = {**entry.data, **entry.options}
 
-    coordinator = SkyFeederCoordinator(hass, merged)
+    store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.storage")
+
+    coordinator = SkyFeederCoordinator(hass, merged, store=store)
+    await coordinator.async_load_tracked()
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    _register_services(hass)
+    _register_services(hass, coordinator)
     _register_panels(hass, entry, merged)
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -64,6 +69,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    coordinator: SkyFeederCoordinator | None = hass.data[DOMAIN].get(entry.entry_id)
+    if coordinator:
+        await coordinator.async_save_tracked()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
@@ -85,7 +94,7 @@ def _all_coordinators(hass: HomeAssistant) -> list[SkyFeederCoordinator]:
     return list(hass.data.get(DOMAIN, {}).values())
 
 
-def _register_services(hass: HomeAssistant) -> None:
+def _register_services(hass: HomeAssistant, first_coord: SkyFeederCoordinator) -> None:
     """Register services once; idempotent across multiple config entries."""
     if hass.services.has_service(DOMAIN, SERVICE_TRACK):
         return
@@ -94,17 +103,20 @@ def _register_services(hass: HomeAssistant) -> None:
         ident: str = call.data["aircraft"]
         for coord in _all_coordinators(hass):
             coord.add_tracked(ident)
+            await coord.async_save_tracked()
             await coord.async_request_refresh()
 
     async def _handle_untrack(call: ServiceCall) -> None:
         ident: str = call.data["aircraft"]
         for coord in _all_coordinators(hass):
             coord.remove_tracked(ident)
+            await coord.async_save_tracked()
             await coord.async_request_refresh()
 
     async def _handle_clear(_: ServiceCall) -> None:
         for coord in _all_coordinators(hass):
             coord.clear_tracked()
+            await coord.async_save_tracked()
             await coord.async_request_refresh()
 
     hass.services.async_register(DOMAIN, SERVICE_TRACK, _handle_track, schema=TRACK_SCHEMA)
@@ -113,14 +125,6 @@ def _register_services(hass: HomeAssistant) -> None:
 
 
 # ---- Sidebar iframe panels ----------------------------------------------------
-#
-# A HACS-only install still gives users the tar1090 map and graphs1090 stats
-# in the HA sidebar by registering iframe panels that point straight at the
-# upstream ADS-B feeder host.
-#
-# Caveat: if Home Assistant is served over HTTPS the browser will refuse to
-# load an http:// iframe (mixed content). In that case serve the upstream
-# feeder over HTTPS (e.g. behind a reverse proxy) or disable panels.
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -145,6 +149,9 @@ def _register_panels(hass: HomeAssistant, entry: ConfigEntry, merged: dict) -> N
     if not host:
         return
 
+    use_tls = bool(merged.get(CONF_USE_TLS, DEFAULT_USE_TLS))
+    scheme = "https" if use_tls else "http"
+
     tar_port = int(merged.get(CONF_PORT))
     tar_path = _normalise_path(merged.get(CONF_TAR1090_PATH, DEFAULT_TAR1090_PATH))
     graphs_port = int(merged.get(CONF_GRAPHS1090_PORT, DEFAULT_GRAPHS1090_PORT))
@@ -165,7 +172,7 @@ def _register_panels(hass: HomeAssistant, entry: ConfigEntry, merged: dict) -> N
             sidebar_title=f"{title_prefix} Map",
             sidebar_icon="mdi:airplane",
             frontend_url_path=map_panel,
-            config={"url": f"http://{host}:{tar_port}{tar_path}/"},
+            config={"url": f"{scheme}://{host}:{tar_port}{tar_path}/"},
             require_admin=False,
         )
         paths.append(map_panel)
@@ -179,7 +186,7 @@ def _register_panels(hass: HomeAssistant, entry: ConfigEntry, merged: dict) -> N
             sidebar_title=f"{title_prefix} Stats",
             sidebar_icon="mdi:chart-line",
             frontend_url_path=graphs_panel,
-            config={"url": f"http://{host}:{graphs_port}{graphs_path}/"},
+            config={"url": f"{scheme}://{host}:{graphs_port}{graphs_path}/"},
             require_admin=False,
         )
         paths.append(graphs_panel)
